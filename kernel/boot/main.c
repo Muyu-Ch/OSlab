@@ -38,12 +38,11 @@ void start_main() {
   kinit();
   kvmininit();
   
+  uartinit();
   trapinithart(); 
-  plicinit(); 
-  
+  plicinit();
   kvminithart();
   printf("Paging enabled! Interrupts on.\n");
-  
   intr_on();
 
   while(1);

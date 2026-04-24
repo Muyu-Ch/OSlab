@@ -14,6 +14,21 @@
 #include "riscv.h"
 #include "types.h"
 
+// 正确位置：单独函数
+void uartinit(void) {
+    // 设置 LCR 为 8 位数据，1 停止位，无校验
+    *(volatile uint8*)(UART0 + 3) = 0x03;
+    // 设置波特率（假设 115200，QEMU 默认时钟 125MHz）
+    *(volatile uint8*)(UART0 + 3) = 0x83;   // DLAB=1
+    *(volatile uint8*)(UART0 + 0) = 0x03;   // 除数低字节 (115200)
+    *(volatile uint8*)(UART0 + 1) = 0x00;   // 除数高字节
+    *(volatile uint8*)(UART0 + 3) = 0x03;   // DLAB=0
+    // 启用 FIFO，清空 FIFO
+    *(volatile uint8*)(UART0 + 2) = 0x07;
+    // 启用接收中断，禁用发送中断
+    *(volatile uint8*)(UART0 + 1) = 0x01;
+}
+
 void plicinit(void) {
     int hartid = 0;
 
@@ -48,6 +63,7 @@ void trapinithart(void) {
    *   3. 陷阱向量寄存器有「直接模式」和「向量模式」两种，本框架使用哪种？
    * ================================================================ */
   w_stvec((uint64)sys_trap_vector);
+  w_sie(r_sie() | SIE_SSIE | SIE_SEIE);
 }
 
 /* ================================================================
@@ -105,33 +121,29 @@ void sys_trap_handler(void) {
       }
       break;
 
-    case 9:
-      int hartid = 0;
-      printf("999\n");
-      // 1. 从PLIC读中断号（用新名字，不要叫irq！）
-      int device_irq = *(uint32*)PLIC_SCLAIM(hartid);
-      printf("irq=%d\n",device_irq);
-      // 2. 如果是UART
-      if (device_irq == UART0_IRQ) 
-      {
-        // 读键盘
-        char c = *(volatile unsigned char*)(UART0 + 0x0);
-        printf("get key: %c\n", c);
+    case 9: 
+    int hartid = 0;
+    int irq1 = *(uint32*)PLIC_SCLAIM(hartid);
+    if (irq1 != 0) {
+      if (irq1 == UART0_IRQ) {
+        // 读 UART 清空中断
+        volatile char c = *(volatile unsigned char*)UART0;
+        printf("key:%c\n", c);
       }
+      *(uint32*)PLIC_SCLAIM(hartid) = irq1;
+    }
+    break;
 
-      // 3. 告诉PLIC完成
-      *(uint32*)PLIC_SCLAIM(hartid) = device_irq;
-      break;
-
+  
     default:
       printf("sys_trap_handler: unknown interrupt irq=%ld\n", irq);
       break;
-    }
-
-  } else {
+    } 
+  }
+  else {
     /* 同步异常：内核代码出了错，无法恢复，直接 panic */
-    printf("sys_trap_handler: exception! scause=%ld, sepc=%p, stval=%p\n",
-           scause, sepc, r_stval());
+    printf("sys_trap_handler: exception! scause=%lx, sepc=%p, stval=%p\n",
+       scause, sepc, r_stval());
     panic("sys_trap_handler: unexpected exception");
   }
 

@@ -163,6 +163,9 @@ void kvmininit(void) {
    *   地址：UART0（见 memlayout.h），大小：PGSIZE，权限：可读+可写。
    * ================================================================ */
   mappages(kernel_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  mappages(kernel_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
   /* ================================================================
    * TODO [Lab3-任务4-步骤2]：
    *   映射内核代码段：从 KERNBASE 到 etext。
