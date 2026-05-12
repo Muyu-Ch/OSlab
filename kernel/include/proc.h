@@ -9,7 +9,7 @@
 #define PROC_H
 
 #include "types.h"
-
+#include "param.h"
 /* ================================================================
  * 进程状态枚举
  * ================================================================ */
@@ -122,8 +122,7 @@ struct cpu {
   int intena;             /* 关中断前，中断是否是开着的 */
 };
 
-extern struct cpu
-    cpus[NCPU]; /* 所有 CPU 核心的描述符数组（param.h 中 NCPU=1）*/
+extern struct cpu cpus[NCPU]; /* 所有 CPU 核心的描述符数组（param.h 中 NCPU=1）*/
 extern struct proc proc[NPROC]; /* 全局进程表（param.h 中 NPROC=64）*/
 
 #endif /* PROC_H */

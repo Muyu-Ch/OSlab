@@ -97,9 +97,7 @@ void sys_trap_handler(void) {
        *      思考：为什么不应每次中断都打印？应如何控制打印频率？
        *   3. （Lab5 完成后追加）：若当前有正在运行的进程，调用 yield() 让出 CPU。
        * ================================================================ */
-      uint64 x = r_sip();
-      x = x & ~(1<<1);
-      w_sip(x);
+      w_sip(r_sip()& ~(1<<1));
       ticks++;
       if(ticks%TickRate==0){
         printf("Tick! ticks=%d\n", ticks);

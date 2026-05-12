@@ -33,7 +33,6 @@
  * ================================================================ */
 
 void start_main() {
-  uint64 x = 0;
   printf("main start!\n");
   kinit();
   kvmininit();
