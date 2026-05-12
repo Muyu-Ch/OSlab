@@ -128,8 +128,7 @@ void start(void) {
   /* 将所有中断和异常委托给 S-Mode 处理（不需要 M-Mode 转手）*/
   // /* 将所有中断和异常委托给 S-Mode 处理，但保留 M-Mode 时钟中断 */
   w_medeleg(0xffff); /* 委托所有同步异常 */
-  // w_mideleg(0xffff); /* 委托所有中断 */
-  w_mideleg(0xfffb); /* 委托所有中断，除了 M-Mode 时钟中断 (bit 7) */
+  w_mideleg(0xffff); /* 委托所有中断，除了 M-Mode 时钟中断 (bit 7) */
 
 
   /* 在 S-Mode 中开启时钟中断和软件中断的使能位 */

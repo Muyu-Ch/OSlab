@@ -14,24 +14,10 @@
 #include "riscv.h"
 #include "types.h"
 
-// 正确位置：单独函数
-void uartinit(void) {
-    // 设置 LCR 为 8 位数据，1 停止位，无校验
-    *(volatile uint8*)(UART0 + 3) = 0x03;
-    // 设置波特率（假设 115200，QEMU 默认时钟 125MHz）
-    *(volatile uint8*)(UART0 + 3) = 0x83;   // DLAB=1
-    *(volatile uint8*)(UART0 + 0) = 0x03;   // 除数低字节 (115200)
-    *(volatile uint8*)(UART0 + 1) = 0x00;   // 除数高字节
-    *(volatile uint8*)(UART0 + 3) = 0x03;   // DLAB=0
-    // 启用 FIFO，清空 FIFO
-    *(volatile uint8*)(UART0 + 2) = 0x07;
-    // 启用接收中断，禁用发送中断
-    *(volatile uint8*)(UART0 + 1) = 0x01;
-}
 
 void plicinit(void) {
     int hartid = 0;
-
+    *(volatile uint8*)(UART0 + 1) = 0x01;
     *(uint32*)(PLIC_PRIORITY + UART0_IRQ * 4) = 1;
     *(uint32*)PLIC_SENABLE(hartid) |= (1 << UART0_IRQ);
     *(uint32*)PLIC_SPRIORITY(hartid) = 0;
@@ -63,7 +49,6 @@ void trapinithart(void) {
    *   3. 陷阱向量寄存器有「直接模式」和「向量模式」两种，本框架使用哪种？
    * ================================================================ */
   w_stvec((uint64)sys_trap_vector);
-  w_sie(r_sie() | SIE_SSIE | SIE_SEIE);
 }
 
 /* ================================================================

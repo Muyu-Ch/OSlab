@@ -33,16 +33,15 @@
  * ================================================================ */
 
 void start_main() {
+  uint64 x = 0;
   printf("main start!\n");
-  
   kinit();
   kvmininit();
-  
-  uartinit();
-  trapinithart(); 
-  plicinit();
   kvminithart();
   printf("Paging enabled! Interrupts on.\n");
+
+  trapinithart(); 
+  plicinit();
   intr_on();
 
   while(1);

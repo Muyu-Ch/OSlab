@@ -66,7 +66,6 @@ void kerneltrap(void);
 void usertrap(void);
 void usertrapret(void);
 void plicinit(void);
-void uartinit(void);
 
 /* ======================================================
  * Lab5 新增：进程管理
