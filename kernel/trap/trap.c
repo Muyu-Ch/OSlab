@@ -13,7 +13,7 @@
 #include "param.h"
 #include "riscv.h"
 #include "types.h"
-
+#include "proc.h"
 
 void plicinit(void) {
     int hartid = 0;
@@ -29,6 +29,9 @@ uint64 ticks = 0;
 /* 声明 sys_trap_vector 汇编入口（在 kernelvec.S 中定义）*/
 extern char sys_trap_vector[];
 
+extern struct proc *myproc(void);
+
+extern void yield(void);
 /* ================================================================
  * trapinithart — 设置 S-Mode 陷阱向量
  *
@@ -70,9 +73,6 @@ void sys_trap_handler(void) {
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
 
-  /* 验证：进入内核陷阱前，S-Mode 的中断应该已经关闭 */
-  if ((sstatus & SSTATUS_SPP) == 0)
-    panic("sys_trap_handler: not from supervisor mode");
   if (intr_get())
     panic("sys_trap_handler: entered with interrupts enabled");
 
@@ -82,34 +82,20 @@ void sys_trap_handler(void) {
 
     switch (irq) {
     case 1:
-      /* ================================================================
-       * TODO [Lab4-任务3-步骤1]：处理时钟软件中断（scause irq=1）
-       *
-       * 背景：M-Mode 的 timervec 汇编代码在处理硬件时钟中断后，
-       *   通过向 sip 寄存器的 SSIP 位写 1，向 S-Mode 注入一个软件中断信号。
-       *   本 case 分支就是响应该信号的地方。
-       *
-       * 你的任务（不给实现，只给目标）：
-       *   1. 清除中断待处理标志：sip 寄存器的哪一位对应软件中断 pending？
-       *      若不清除，会发生什么情况？
-       *      参考：kernel/include/riscv.h 中的 r_sip() 和 w_sip()
-       *   2. 统计时钟中断次数（ticks），并以适当频率打印心跳信息。
-       *      思考：为什么不应每次中断都打印？应如何控制打印频率？
-       *   3. （Lab5 完成后追加）：若当前有正在运行的进程，调用 yield() 让出 CPU。
-       * ================================================================ */
       w_sip(r_sip()& ~(1<<1));
       ticks++;
-      if(ticks%TickRate==0){
+      if(ticks % TickRate == 0){
         printf("Tick! ticks=%d\n", ticks);
       }
+      if(myproc() != 0)
+        yield();
       break;
 
-    case 9: 
+    case 9:
     int hartid = 0;
     int irq1 = *(uint32*)PLIC_SCLAIM(hartid);
     if (irq1 != 0) {
       if (irq1 == UART0_IRQ) {
-        // 读 UART 清空中断
         volatile char c = *(volatile unsigned char*)UART0;
         printf("key:%c\n", c);
       }
@@ -117,14 +103,17 @@ void sys_trap_handler(void) {
     }
     break;
 
-  
     default:
       printf("sys_trap_handler: unknown interrupt irq=%ld\n", irq);
       break;
-    } 
+    }
+  }
+  else if (scause == 8) {
+    /* 来自 U-Mode 的 ecall，转给 usertrap 处理 */
+    usertrap();
   }
   else {
-    /* 同步异常：内核代码出了错，无法恢复，直接 panic */
+    /* 同步异常：无法恢复，直接 panic */
     printf("sys_trap_handler: exception! scause=%lx, sepc=%p, stval=%p\n",
        scause, sepc, r_stval());
     panic("sys_trap_handler: unexpected exception");
@@ -137,6 +126,7 @@ void sys_trap_handler(void) {
   w_sepc(sepc);
   w_sstatus(sstatus);
 }
+
 
 /* ================================================================
  * usertrap — 用户态陷阱处理（Lab6 新增）
@@ -156,20 +146,15 @@ void usertrap(void) {
 
   if (cause == 8) {
     /* 来自 U-Mode 的 ecall（系统调用）*/
-
+    myproc()->trapframe->epc += 4;
     /* 允许中断（系统调用可能涉及耗时 I/O 操作）*/
     intr_on();
-
-    /* ================================================================
-     * TODO [Lab6-任务2]：
-     *   将被打断的 PC（sepc）向后移动 4 字节，跳过 ecall 指令。
-     *   需要通过 myproc()->trapframe->epc 访问该字段并对其加 4。
-     *   如不执行此步，返回后用户态会无限重复执行 ecall！
-     * ================================================================ */
+    printf("usertrap: syscall from user pid=%d\n", myproc()->pid);
 
     /* 分发给系统调用处理函数 */
     /*syscall();*/
 
+    usertrapret();
   } else {
     /* 用户态发生异常（如非法内存访问），直接终止该进程 */
     printf("usertrap: unexpected scause=%ld\n", cause);
@@ -177,3 +162,29 @@ void usertrap(void) {
     panic("usertrap");
   }
 }
+
+void usertrapret(void)
+{
+    struct proc *p = myproc();
+
+    // 关中断
+    intr_off();
+
+    // 保存内核信息到trapframe
+    p->trapframe->kernel_sp = p->kstack + PGSIZE;
+    p->trapframe->kernel_trap = (uint64)usertrap;
+    p->trapframe->kernel_hartid = r_tp();
+
+    // 设置返回用户态
+    uint64 sstatus = r_sstatus();
+    sstatus &= ~(1L << 8);  // SPP=0 → U-Mode
+    sstatus |= (1L << 5);   // SPIE=1 → 开中断
+    w_sstatus(sstatus);
+
+    // 设置用户程序入口
+    w_sepc(p->trapframe->epc);
+
+    // 跳进用户态！
+    asm volatile("sret");
+}
+

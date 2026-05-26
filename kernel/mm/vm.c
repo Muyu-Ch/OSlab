@@ -99,7 +99,7 @@ pte_t *walk(pagetable_t pagetable, uint64 va, int alloc) {
  *
  * 返回值：0 表示成功，-1 表示失败（内存不足）
  * ================================================================ */
-int mappages(pagetable_t pagetable, uint64 pa, uint64 va, uint64 size,
+int mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa,
              int perm) {
   uint64 a, last;
   pte_t *pte;
@@ -162,9 +162,9 @@ void kvmininit(void) {
    *   映射 UART0 串口设备（MMIO区域），使内核可以访问串口寄存器。
    *   地址：UART0（见 memlayout.h），大小：PGSIZE，权限：可读+可写。
    * ================================================================ */
-  mappages(kernel_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  mappages(kernel_pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W);
 
-  mappages(kernel_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  mappages(kernel_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
 
   /* ================================================================
    * TODO [Lab3-任务4-步骤2]：
@@ -172,13 +172,13 @@ void kvmininit(void) {
    *   权限：可读+可执行（注意：代码段不能有写权限！）。
    * ================================================================ */
   uint64 etext111=PGROUNDUP((uint64)etext);
-  mappages(kernel_pagetable, KERNBASE, KERNBASE, etext111 - KERNBASE, PTE_R | PTE_X);
+  mappages(kernel_pagetable, KERNBASE, etext111 - KERNBASE, KERNBASE, PTE_R | PTE_X);
   /* ================================================================
    * TODO [Lab3-任务4-步骤3]：
    *   映射内核数据段和剩余可用物理内存：从 etext 到 PHYSTOP。
    *   权限：可读+可写（数据段需要写权限，但不能有可执行权限）。
    * ================================================================ */
-  mappages(kernel_pagetable, etext111, etext111, PHYSTOP - etext111, PTE_R | PTE_W);
+  mappages(kernel_pagetable, etext111, PHYSTOP - etext111, etext111, PTE_R | PTE_W);
     
   
 }
@@ -193,6 +193,14 @@ void kvmininit(void) {
  *       如果 kvmininit 的映射写错了，下一条指令就会产生 Page Fault，
  *       导致系统崩溃（此时无任何错误提示，GDB 单步调试是唯一出路）。
  * ================================================================ */
+void uvminit(pagetable_t user_pt) {
+  uint64 etext_aligned = PGROUNDUP((uint64)etext);
+  mappages(user_pt, UART0, PGSIZE, UART0, PTE_R | PTE_W);
+  mappages(user_pt, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
+  mappages(user_pt, KERNBASE, etext_aligned - KERNBASE, KERNBASE, PTE_R | PTE_X);
+  mappages(user_pt, etext_aligned, PHYSTOP - etext_aligned, etext_aligned, PTE_R | PTE_W);
+}
+
 void kvminithart(void) {
   /* ================================================================
    * TODO [Lab3-任务4-步骤4]：

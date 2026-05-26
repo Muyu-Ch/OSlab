@@ -49,6 +49,8 @@ pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
 int mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa,
              int perm);
 uint64 walkaddr(pagetable_t pagetable, uint64 va);
+void uvminit(pagetable_t user_pt);
+extern pagetable_t kernel_pagetable;
 
 /* ======================================================
  * Lab4 新增：启动初始化
@@ -63,10 +65,8 @@ void timerinit(void);
  * ====================================================== */
 void trapinithart(void);
 void kerneltrap(void);
-void usertrap(void);
-void usertrapret(void);
-void plicinit(void);
 
+void plicinit(void);
 /* ======================================================
  * Lab5 新增：进程管理
  * 文件：kernel/proc/proc.c
@@ -80,7 +80,9 @@ void yield(void);
 void sched(void);
 void sleep(void *chan);
 void wakeup(void *chan);
-
+void usertrap(void);
+void usertrapret(void);
+void userinit(void);
 /* ======================================================
  * Lab5 新增：上下文切换汇编
  * 文件：kernel/proc/swtch.S
@@ -92,6 +94,7 @@ void swtch(struct context *old, struct context *new);
  * 文件：kernel/syscall/syscall.c
  * ====================================================== */
 void syscall(void);
+void* memset(void* dst, int c, uint64 n);
 
 /* ======================================================
  * Lab6 新增：系统调用具体实现

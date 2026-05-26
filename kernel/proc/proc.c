@@ -14,13 +14,26 @@
 #include "riscv.h"
 #include "types.h"
 
+extern char sys_trap_vector[];
+
+// 用户态 proczero：两次 ecall + 死循环
+static uint8 proczero_code[] = {
+    0x73, 0x00, 0x00, 0x00, // ecall
+    0x73, 0x00, 0x00, 0x00, // ecall
+    0x6f, 0x00, 0x00, 0x00  // j . 死循环
+};
+
+
 /* 全局进程表和 CPU 描述符（在 proc.h 中 extern 声明）*/
 struct proc proc[NPROC];
 struct cpu cpus[NCPU];
 
+
+
 /* 进程 ID 计数器（每次 allocpid 返回后递增）*/
 static int nextpid = 1;
 
+extern void forkret(void);
 /* ================================================================
  * mycpu — 获取当前 CPU 核心的 cpu 结构指针
  *
@@ -85,7 +98,14 @@ found:
    *   2. 分配 trapframe 页：调用 kalloc()；若失败则将状态恢复为 TASK_FREE 并返回0
    *   3. 将进程状态设为 TASK_ALLOCATED
    * ================================================================ */
-
+  p->pid = allocpid();
+  p->trapframe = (struct trapframe *)kalloc();
+  if (p->trapframe == 0) {
+    p->status = TASK_FREE;
+    return 0;
+  }
+  p->status = TASK_ALLOCATED;
+  p->context.ra = (uint64)forkret;
   return p;
 }
 
@@ -109,11 +129,11 @@ void scheduler(void) {
   struct cpu *c = mycpu();
 
   c->proc = 0;
+  w_stvec((uint64)sys_trap_vector);
 
   for (;;) {
     /* 必须打开中断！否则时钟信号无法到达，调度无法触发 */
     intr_on();
-
     for (p = proc; p < &proc[NPROC]; p++) {
       /* ================================================================
        * TODO [Lab5-任务3]：
@@ -124,6 +144,12 @@ void scheduler(void) {
        *   4. 调用 swtch 切换到 p 的上下文：swtch(&c->context, &p->context)
        *   5. swtch 返回后（进程放弃了CPU），清零 c->proc
        * ================================================================ */
+      if(p->status == TASK_READY) {
+        p->status = TASK_RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
+        c->proc = 0;
+      }
     }
   }
 }
@@ -135,12 +161,114 @@ void scheduler(void) {
  * ================================================================ */
 void yield(void) {
   struct proc *p = myproc();
+  if (p == 0) return;
+  p->status = TASK_READY;
+  swtch(&p->context, &mycpu()->context);
+}
 
-  /* ================================================================
-   * TODO [Lab5-任务4]：
-   *   1. 将进程状态改为 TASK_READY
-   *   2. 调用 swtch 切回调度器上下文：swtch(&p->context, &mycpu()->context)
-   *
-   *   思考：为什么是 "进程 → 调度器" 而不是 "进程A → 进程B" 直接切换？
-   * ================================================================ */
+
+void forkret(void) {
+  usertrapret();
+}
+
+void* memset(void* dst, int c, uint64 n)
+{
+    uint8 *d = (uint8*)dst;
+    while (n--)
+        *d++ = c;
+    return dst;
+}
+
+void* memmove(void *dst, const void *src, uint64 n)
+{
+    uint64 *d = dst;
+    const uint64 *s = src;
+
+    if (d < s) {
+        // 从前往后拷贝
+        while (n--)
+            *d++ = *s++;
+    } else {
+        // 从后往前拷贝（处理重叠情况）
+        d += n;
+        s += n;
+        while (n--)
+            *--d = *--s;
+    }
+
+    return dst;
+}
+
+char* strncpy(char *dst, const char *src, uint64 n)
+{
+    uint64 i;
+    for (i = 0; i < n && src[i] != 0; i++)
+        dst[i] = src[i];
+    for (; i < n; i++)
+        dst[i] = 0;
+    return dst;
+}
+
+
+void userinit(void){
+  struct proc * p = allocproc();// 在进程表中为第一个用户进程分配一个槽位并初始化 PCB
+  if(p == 0){panic("userinit: allocproc failed");}
+
+  p->kstack=(uint64)kalloc();// 为该进程分配一个内核栈页面，并设置PCB中的内核栈顶地址字段
+  if(p->kstack == 0){panic("userinit: kalloc failed");}
+  p->context.sp = p->kstack + PGSIZE;// 设置内核栈指针（栈顶地址）
+  
+  p->pagetable = (pagetable_t)kalloc();
+  if (p->pagetable == 0) panic("userinit: pagetable kalloc failed");
+  memset(p->pagetable, 0, PGSIZE);
+  uvminit(p->pagetable);
+
+  uint64 code_pa=(uint64)kalloc();// 为用户程序代码分配一个物理页面
+  if(code_pa == 0){panic("userinit: kalloc failed");}
+  
+  memmove(
+    code_pa, 
+    proczero_code, 
+    sizeof(proczero_code)
+  );// 将用户程序代码复制到分配的物理页面
+
+  mappages(// 在用户页表中映射该物理页面到同一虚拟地址（code_pa），权限为可读、可执行、用户态访问
+    p->pagetable,
+    0,
+    PGSIZE,
+    code_pa,
+    PTE_R | PTE_X | PTE_U
+  );
+  // 同时映射到内核页表，使内核也能访问用户代码
+  mappages(kernel_pagetable, 0, PGSIZE, code_pa, PTE_R | PTE_X | PTE_U);
+
+  uint64 stack_pa=kalloc();// 为用户栈分配一个物理页面
+  if(stack_pa == 0){panic("userinit: kalloc failed");}
+
+  mappages(// 在用户页表中映射该物理页面到虚拟地址 PGSIZE（用户栈顶），权限为可读、可写、用户态访问
+    p->pagetable,
+    PGSIZE,
+    PGSIZE,
+    stack_pa,
+    PTE_R | PTE_W | PTE_U
+  );
+  // 同时映射到内核页表
+  mappages(kernel_pagetable, PGSIZE, PGSIZE, stack_pa, PTE_R | PTE_W | PTE_U);
+  
+  memset(// 初始化 trapframe（用户寄存器备份区）为0
+    p->trapframe, 
+    0, 
+    sizeof(struct trapframe)
+  );
+
+  p->trapframe->epc = 0; // 用户态程序从虚拟地址 0 开始执行
+  p->trapframe->sp = PGSIZE; // 用户栈顶地址（虚拟地址 PGSIZE）
+  
+  strncpy(
+    p->name, 
+    "proczero", 
+    sizeof(p->name)
+  );//设置进程名称（调试用）
+  
+  p->status = TASK_READY;
 }

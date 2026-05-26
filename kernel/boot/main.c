@@ -31,17 +31,29 @@
  *
  *   验收标准：运行 `make run` 后，终端出现上述字符串输出。
  * ================================================================ */
-
-void start_main() {
-  printf("main start!\n");
-  kinit();
-  kvmininit();
-  kvminithart();
+void Lab3(){
+  kinit();kvmininit();kvminithart();
   printf("Paging enabled! Interrupts on.\n");
+}
 
+void Lab4(){
   trapinithart(); 
   plicinit();
   intr_on();
+}
+
+void Lab5(){
+  procinit();
+  userinit();
+  scheduler();
+}
+
+void start_main() {
+  printf("main start!\n");
+
+  Lab3();
+  Lab4();
+  Lab5();
 
   while(1);
 }
