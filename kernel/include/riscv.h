@@ -182,6 +182,16 @@ static inline void w_mscratch(uint64 x) {
   asm volatile("csrw mscratch, %0" : : "r"(x));
 }
 
+/* 监管态临时寄存器 sscratch：用户态→内核态切换时，存放 trapframe 指针 */
+static inline uint64 r_sscratch() {
+  uint64 x;
+  asm volatile("csrr %0, sscratch" : "=r"(x));
+  return x;
+}
+static inline void w_sscratch(uint64 x) {
+  asm volatile("csrw sscratch, %0" : : "r"(x));
+}
+
 
 /* 线程指针寄存器 tp：在本实验框架中用来存当前 hartid，方便 mycpu() 使用 */
 static inline uint64 r_tp() {

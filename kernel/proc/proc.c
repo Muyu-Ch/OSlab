@@ -227,41 +227,38 @@ void userinit(void){
   if(code_pa == 0){panic("userinit: kalloc failed");}
   
   memmove(
-    code_pa, 
-    proczero_code, 
+    (void*)code_pa,
+    proczero_code,
     sizeof(proczero_code)
-  );// 将用户程序代码复制到分配的物理页面
+  );
 
-  mappages(// 在用户页表中映射该物理页面到同一虚拟地址（code_pa），权限为可读、可执行、用户态访问
+  mappages(
     p->pagetable,
     0,
     PGSIZE,
     code_pa,
     PTE_R | PTE_X | PTE_U
   );
-  // 同时映射到内核页表，使内核也能访问用户代码
-  mappages(kernel_pagetable, 0, PGSIZE, code_pa, PTE_R | PTE_X | PTE_U);
 
-  uint64 stack_pa=kalloc();// 为用户栈分配一个物理页面
+  uint64 stack_pa=(uint64)kalloc();
   if(stack_pa == 0){panic("userinit: kalloc failed");}
 
-  mappages(// 在用户页表中映射该物理页面到虚拟地址 PGSIZE（用户栈顶），权限为可读、可写、用户态访问
+  mappages(
     p->pagetable,
     PGSIZE,
     PGSIZE,
     stack_pa,
     PTE_R | PTE_W | PTE_U
   );
-  // 同时映射到内核页表
-  mappages(kernel_pagetable, PGSIZE, PGSIZE, stack_pa, PTE_R | PTE_W | PTE_U);
   
-  memset(// 初始化 trapframe（用户寄存器备份区）为0
-    p->trapframe, 
-    0, 
+  memset(
+    p->trapframe,
+    0,
     sizeof(struct trapframe)
   );
 
-  p->trapframe->epc = 0; // 用户态程序从虚拟地址 0 开始执行
+  p->trapframe->kernel_satp = MAKE_SATP(kernel_pagetable);
+  p->trapframe->epc = 0;
   p->trapframe->sp = PGSIZE; // 用户栈顶地址（虚拟地址 PGSIZE）
   
   strncpy(

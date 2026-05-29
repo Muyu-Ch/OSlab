@@ -88,6 +88,7 @@ void userinit(void);
  * 文件：kernel/proc/swtch.S
  * ====================================================== */
 void swtch(struct context *old, struct context *new);
+extern char user_trap_vector[];
 
 /* ======================================================
  * Lab6 新增：系统调用分发

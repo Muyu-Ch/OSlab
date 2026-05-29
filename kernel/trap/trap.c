@@ -109,7 +109,6 @@ void sys_trap_handler(void) {
     }
   }
   else if (scause == 8) {
-    /* 来自 U-Mode 的 ecall，转给 usertrap 处理 */
     usertrap();
   }
   else {
@@ -139,15 +138,29 @@ void sys_trap_handler(void) {
  *   - 只处理 scause == 8（来自 U-Mode 的 ecall）
  * ================================================================ */
 void usertrap(void) {
-  /* 立即切换到内核态陷阱向量（防止处理用户陷阱时再发生用户态中断）*/
   w_stvec((uint64)sys_trap_vector);
 
-  uint64 cause = r_scause();
+  uint64 scause = r_scause();
 
-  if (cause == 8) {
+  if (scause & 0x8000000000000000L) {
+    /* 用户态期间发生的异步中断（时钟等）*/
+    uint64 irq = scause & 0xff;
+
+    if (irq == 1) {
+      w_sip(r_sip() & ~(1<<1));
+      ticks++;
+      if (ticks % TickRate == 0)
+        printf("Tick! ticks=%d\n", ticks);
+      if (myproc() != 0)
+        yield();
+    } else {
+      printf("usertrap: unknown interrupt irq=%ld\n", irq);
+    }
+
+    usertrapret();
+  } else if (scause == 8) {
     /* 来自 U-Mode 的 ecall（系统调用）*/
     myproc()->trapframe->epc += 4;
-    /* 允许中断（系统调用可能涉及耗时 I/O 操作）*/
     intr_on();
     printf("usertrap: syscall from user pid=%d\n", myproc()->pid);
 
@@ -156,9 +169,8 @@ void usertrap(void) {
 
     usertrapret();
   } else {
-    /* 用户态发生异常（如非法内存访问），直接终止该进程 */
-    printf("usertrap: unexpected scause=%ld\n", cause);
-    /* 理想情况下应该 exit(-1) 杀死该进程，暂不实现 */
+    /* 用户态发生异常，直接终止该进程 */
+    printf("usertrap: unexpected scause=%ld\n", scause);
     panic("usertrap");
   }
 }
@@ -167,24 +179,26 @@ void usertrapret(void)
 {
     struct proc *p = myproc();
 
-    // 关中断
     intr_off();
 
-    // 保存内核信息到trapframe
+    p->trapframe->kernel_satp = MAKE_SATP(kernel_pagetable);
     p->trapframe->kernel_sp = p->kstack + PGSIZE;
     p->trapframe->kernel_trap = (uint64)usertrap;
     p->trapframe->kernel_hartid = r_tp();
 
-    // 设置返回用户态
     uint64 sstatus = r_sstatus();
     sstatus &= ~(1L << 8);  // SPP=0 → U-Mode
-    sstatus |= (1L << 5);   // SPIE=1 → 开中断
+    sstatus |= (1L << 5);   // SPIE=1 → 用户态开中断
     w_sstatus(sstatus);
 
-    // 设置用户程序入口
     w_sepc(p->trapframe->epc);
 
-    // 跳进用户态！
+    w_stvec((uint64)user_trap_vector);
+    w_sscratch((uint64)p->trapframe);
+
+    w_satp(MAKE_SATP(p->pagetable));
+    sfence_vma();
+
     asm volatile("sret");
 }
 
