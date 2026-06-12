@@ -111,6 +111,10 @@ struct proc {
   struct context context;      /* 内核上下文（swtch 使用）*/
   uint64 kstack;               /* 该进程的内核栈顶地址 */
   uint64 sz;                   /* 进程地址空间大小（字节）*/
+  struct proc *parent;         /* 父进程指针 */
+  uint64 xstate;               /* 退出状态码（wait 获取）*/
+  void *chan;                  /* sleep/wakeup 等待通道 */
+  int killed;                  /* 是否已被 kill */
   char name[16];               /* 进程名称（调试用）*/
 };
 

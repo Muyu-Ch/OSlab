@@ -16,12 +16,9 @@
 
 extern char sys_trap_vector[];
 
-// 用户态 proczero：两次 ecall + 死循环
-static uint8 proczero_code[] = {
-    0x73, 0x00, 0x00, 0x00, // ecall
-    0x73, 0x00, 0x00, 0x00, // ecall
-    0x6f, 0x00, 0x00, 0x00  // j . 死循环
-};
+// 用户程序二进制，由 Makefile 从 user/prozero.c + usys.S 自动编译生成
+extern char _binary_user_prozero_bin_start[];
+extern char _binary_user_prozero_bin_end[];
 
 
 /* 全局进程表和 CPU 描述符（在 proc.h 中 extern 声明）*/
@@ -217,40 +214,22 @@ void userinit(void){
   p->kstack=(uint64)kalloc();// 为该进程分配一个内核栈页面，并设置PCB中的内核栈顶地址字段
   if(p->kstack == 0){panic("userinit: kalloc failed");}
   p->context.sp = p->kstack + PGSIZE;// 设置内核栈指针（栈顶地址）
-  
-  p->pagetable = (pagetable_t)kalloc();
-  if (p->pagetable == 0) panic("userinit: pagetable kalloc failed");
-  memset(p->pagetable, 0, PGSIZE);
-  uvminit(p->pagetable);
 
-  uint64 code_pa=(uint64)kalloc();// 为用户程序代码分配一个物理页面
-  if(code_pa == 0){panic("userinit: kalloc failed");}
-  
-  memmove(
-    (void*)code_pa,
-    proczero_code,
-    sizeof(proczero_code)
-  );
+  /* 创建独立用户页表（含蹦床和陷阱帧映射）*/
+  p->pagetable = uvmcreate((uint64)p->trapframe);
+  if (p->pagetable == 0) panic("userinit: uvmcreate failed");
 
-  mappages(
-    p->pagetable,
-    0,
-    PGSIZE,
-    code_pa,
-    PTE_R | PTE_X | PTE_U
-  );
+  /* 加载用户代码到 VA 0 */
+  uint64 code_size = (uint64)_binary_user_prozero_bin_end
+                    - (uint64)_binary_user_prozero_bin_start;
+  uvminit(p->pagetable, (uint8 *)_binary_user_prozero_bin_start, code_size);
 
-  uint64 stack_pa=(uint64)kalloc();
-  if(stack_pa == 0){panic("userinit: kalloc failed");}
+  /* 映射用户栈页（VA PGSIZE ~ 2*PGSIZE）*/
+  uint64 stack_pa = (uint64)kalloc();
+  if (stack_pa == 0) panic("userinit: stack kalloc failed");
+  mappages(p->pagetable, PGSIZE, PGSIZE, stack_pa,
+           PTE_R | PTE_W | PTE_U);
 
-  mappages(
-    p->pagetable,
-    PGSIZE,
-    PGSIZE,
-    stack_pa,
-    PTE_R | PTE_W | PTE_U
-  );
-  
   memset(
     p->trapframe,
     0,
@@ -259,13 +238,173 @@ void userinit(void){
 
   p->trapframe->kernel_satp = MAKE_SATP(kernel_pagetable);
   p->trapframe->epc = 0;
-  p->trapframe->sp = PGSIZE; // 用户栈顶地址（虚拟地址 PGSIZE）
-  
+  p->trapframe->sp = PGSIZE * 2; // 用户栈顶地址
+
   strncpy(
-    p->name, 
-    "proczero", 
+    p->name,
+    "proczero",
     sizeof(p->name)
   );//设置进程名称（调试用）
-  
+
+  p->sz = PGSIZE;           /* 地址空间大小（代码页，栈手动映射）*/
+  p->parent = p;            /* init 进程的父进程是自己 */
   p->status = TASK_READY;
+}
+
+/* ================================================================
+ * sleep — 让当前进程在 chan 上进入睡眠
+ * ================================================================ */
+void sleep(void *chan) {
+  struct proc *p = myproc();
+  p->chan = chan;
+  p->status = TASK_SLEEPING;
+  swtch(&p->context, &mycpu()->context);
+  p->chan = 0;
+}
+
+/* ================================================================
+ * wakeup — 唤醒所有在 chan 上睡眠的进程
+ * ================================================================ */
+void wakeup(void *chan) {
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    if (p->chan == chan && p->status == TASK_SLEEPING) {
+      p->status = TASK_READY;
+    }
+  }
+}
+
+/* ================================================================
+ * fork — 复制当前进程，创建子进程
+ * ================================================================ */
+int fork(void) {
+  struct proc *np;
+  struct proc *p = myproc();
+
+  intr_off();
+  if ((np = allocproc()) == 0) { intr_on(); return -1; }
+    return -1;
+
+  /* 创建子进程用户页表（含蹦床和陷阱帧）*/
+  if ((np->pagetable = uvmcreate((uint64)np->trapframe)) == 0) {
+    np->status = TASK_FREE;
+    intr_on();
+    return -1;
+  }
+
+  /* 复制代码页 */
+  { uint64 mem = (uint64)kalloc();
+    if (mem == 0) goto bad;
+    uint64 sz = (uint64)_binary_user_prozero_bin_end
+              - (uint64)_binary_user_prozero_bin_start;
+    memmove((void *)mem, _binary_user_prozero_bin_start, sz);
+    mappages(np->pagetable, 0, PGSIZE, mem,
+             PTE_R | PTE_W | PTE_X | PTE_U);
+  }
+
+  /* 分配子进程栈页 */
+  { uint64 mem = (uint64)kalloc();
+    if (mem == 0) goto bad;
+    memset((void *)mem, 0, PGSIZE);
+    mappages(np->pagetable, PGSIZE, PGSIZE, mem,
+             PTE_R | PTE_W | PTE_U);
+  }
+  np->sz = 2 * PGSIZE;
+
+  /* 复制陷阱帧 */
+  memmove(np->trapframe, p->trapframe, PGSIZE);
+  np->trapframe->a0 = 0;
+
+  /* 分配内核栈 */
+  if ((np->kstack = (uint64)kalloc()) == 0) goto bad;
+  np->context.sp = np->kstack + PGSIZE;
+  np->context.ra = (uint64)forkret;
+
+  /* 设置父子关系 */
+  np->parent = p;
+  strncpy(np->name, p->name, sizeof(np->name));
+  np->status = TASK_READY;
+
+  intr_on();
+  return np->pid;
+
+bad:
+  if (np->pagetable)
+    kfree((void *)np->pagetable);
+  np->status = TASK_FREE;
+  intr_on();
+  return -1;
+}
+
+/* ================================================================
+ * exit — 终止当前进程
+ * ================================================================ */
+void exit(int status) {
+  struct proc *p = myproc();
+
+  /* 将所有子进程移交给 init 进程（pid=1）*/
+  for (struct proc *pp = proc; pp < &proc[NPROC]; pp++) {
+    if (pp->parent == p) {
+      pp->parent = &proc[0];  /* proc[0] 是 init */
+    }
+  }
+
+  /* 唤醒父进程（如果它在 wait 中睡眠）*/
+  wakeup(p->parent);
+
+  /* 记录退出状态 */
+  p->xstate = status;
+  p->status = TASK_ZOMBIE;
+
+  /* 切回调度器，永不返回 */
+  swtch(&p->context, &mycpu()->context);
+  panic("exit: should never reach here");
+}
+
+/* ================================================================
+ * wait — 等待子进程退出并回收
+ * ================================================================ */
+int wait(uint64 addr) {
+  struct proc *p = myproc();
+  struct proc *np;
+  int havekids, pid;
+
+  for (;;) {
+    havekids = 0;
+
+    for (np = proc; np < &proc[NPROC]; np++) {
+      if (np->parent == p) {
+        havekids = 1;
+
+        if (np->status == TASK_ZOMBIE) {
+          /* 找到一个僵尸子进程，回收它 */
+          pid = np->pid;
+          int xstate = np->xstate;
+
+          /* 将退出状态写回用户空间 */
+          if (addr != 0 && pid > 0) {
+            struct proc *cur = myproc();
+            uint64 pa = walkaddr(cur->pagetable, addr);
+            if (pa != 0)
+              *(int *)pa = xstate;
+          }
+
+          /* 释放子进程资源 */
+          kfree((void *)np->trapframe);
+          kfree((void *)np->kstack);
+          kfree((void *)np->pagetable);
+          np->pagetable = 0;
+          np->kstack = 0;
+          np->status = TASK_FREE;
+
+          return pid;
+        }
+      }
+    }
+
+    if (!havekids)
+      return -1;
+
+    /* 没有僵尸子进程但有存活子进程，睡眠等待 */
+    sleep(p);
+  }
 }

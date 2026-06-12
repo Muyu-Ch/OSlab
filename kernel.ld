@@ -21,11 +21,10 @@ SECTIONS
     /* *(.text.entry) 确保 entry.S 中 _entry 的代码排在最前面 */
     *(.text.entry)
     *(.text .text.*)
-    
+
   }
 
   . = ALIGN(0x1000);
-  
   etext = .;
 
   .rodata : {

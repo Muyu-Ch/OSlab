@@ -77,19 +77,41 @@ SRCS = \
     kernel/trap/trap.c \
 	kernel/trap/timervec.S\
     kernel/proc/proc.c\
-    kernel/proc/swtch.S	
+    kernel/proc/swtch.S\
+	kernel/syscall/syscall.c\
+    kernel/syscall/sysproc.c \
+    kernel/trap/trampoline.S
 #   ^ Lab1 基础文件，后续实验在此追加
 
 KERNEL  = kernel.elf
 LDSCRIPT = kernel.ld
+
+USER_DIR  = user
+USER_SRCS = $(USER_DIR)/usys.S $(USER_DIR)/prozero.c
+USER_LD   = $(USER_DIR)/user.ld
+USER_ELF  = $(USER_DIR)/prozero.elf
+USER_BIN  = $(USER_DIR)/prozero.bin
+USER_OBJ  = $(USER_DIR)/prozero.o
 
 # ============================================================
 # 构建目标
 # ============================================================
 all: $(KERNEL)
 
-$(KERNEL): $(SRCS) $(LDSCRIPT)
-	$(CC) $(CFLAGS) -T $(LDSCRIPT) $(SRCS) -o $@
+# 编译用户程序
+$(USER_ELF): $(USER_SRCS) $(USER_LD)
+	$(CC) $(CFLAGS) -T $(USER_LD) $(USER_SRCS) -o $@
+
+# 提取原始二进制
+$(USER_BIN): $(USER_ELF)
+	$(OBJCOPY) -O binary $< $@
+
+# 包装为 ELF 对象文件，暴露 _binary_*_start/_end 符号
+$(USER_OBJ): $(USER_BIN)
+	$(OBJCOPY) -I binary -O elf64-littleriscv --binary-architecture=riscv $< $@
+
+$(KERNEL): $(SRCS) $(LDSCRIPT) $(USER_OBJ)
+	$(CC) $(CFLAGS) -T $(LDSCRIPT) $(SRCS) $(USER_OBJ) -o $@
 	@echo "======================================"
 	@echo " 内核编译成功：$(KERNEL)"
 	@echo " 现在运行 'make run' 启动 QEMU"
@@ -123,6 +145,6 @@ debug: $(KERNEL)
 
 # 清除编译产物
 clean:
-	rm -f $(KERNEL) *.o *.d
+	rm -f $(KERNEL) *.o *.d $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/*.bin
 
 .PHONY: all run debug clean

@@ -26,6 +26,12 @@
  *   getpid() 已完整提供，你需要实现 write() 的桩。
  * ================================================================ */
 
+/* _start — 用户程序入口，CPU 从地址 0 开始执行 */
+    .global _start
+_start:
+    li sp, 8192     /* 设置用户栈指针（PGSIZE * 2）*/
+    j main
+
 /* getpid — 获取当前进程 PID（已提供完整实现）*/
     .global getpid
 getpid:
@@ -53,3 +59,20 @@ exit:
  *     ecall
  *     ret
  * ================================================================ */
+    .global fork
+fork:
+    li a7, SYS_fork
+    ecall
+    ret
+
+    .global wait
+wait:
+    li a7, SYS_wait
+    ecall
+    ret
+
+    .global write
+write:
+    li a7, SYS_write
+    ecall
+    ret

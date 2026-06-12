@@ -9,6 +9,7 @@
 #include "types.h"
 #include "riscv.h" 
 
+struct cpu;
 struct proc;
 struct context;
 struct trapframe;
@@ -49,7 +50,9 @@ pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
 int mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa,
              int perm);
 uint64 walkaddr(pagetable_t pagetable, uint64 va);
-void uvminit(pagetable_t user_pt);
+pagetable_t uvmcreate(uint64 trapframe_pa);
+void uvminit(pagetable_t pt, uint8 *src, uint sz);
+int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz);
 extern pagetable_t kernel_pagetable;
 
 /* ======================================================
@@ -72,6 +75,7 @@ void plicinit(void);
  * 文件：kernel/proc/proc.c
  * ====================================================== */
 void procinit(void);
+struct cpu *mycpu(void);
 struct proc *myproc(void);
 int allocpid(void);
 struct proc *allocproc(void);
@@ -83,6 +87,9 @@ void wakeup(void *chan);
 void usertrap(void);
 void usertrapret(void);
 void userinit(void);
+int fork(void);
+void exit(int status);
+int wait(uint64 addr);
 /* ======================================================
  * Lab5 新增：上下文切换汇编
  * 文件：kernel/proc/swtch.S
@@ -95,7 +102,12 @@ extern char user_trap_vector[];
  * 文件：kernel/syscall/syscall.c
  * ====================================================== */
 void syscall(void);
+void argint(int n, int *ip);
+void argaddr(int n, uint64 *ap);
+int argstr(int n, char *buf, int max);
 void* memset(void* dst, int c, uint64 n);
+void* memmove(void *dst, const void *src, uint64 n);
+char* strncpy(char *dst, const char *src, uint64 n);
 
 /* ======================================================
  * Lab6 新增：系统调用具体实现

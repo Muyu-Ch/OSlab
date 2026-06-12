@@ -25,6 +25,43 @@
 /* 获取定义长度的宏 */
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
 
+/* 从陷阱帧读取第 n 个参数（n=0→a0, n=1→a1, ...）*/
+static uint64 argraw(int n) {
+  struct proc *p = myproc();
+  switch (n) {
+  case 0: return p->trapframe->a0;
+  case 1: return p->trapframe->a1;
+  case 2: return p->trapframe->a2;
+  case 3: return p->trapframe->a3;
+  case 4: return p->trapframe->a4;
+  case 5: return p->trapframe->a5;
+  default: panic("argraw: n > 5");
+  }
+  return 0;
+}
+
+void argint(int n, int *ip) {
+  *ip = argraw(n);
+}
+
+void argaddr(int n, uint64 *ap) {
+  *ap = argraw(n);
+}
+
+/* argstr — 从用户空间安全拷贝字符串到内核缓冲区 */
+int argstr(int n, char *buf, int max) {
+  struct proc *p = myproc();
+  uint64 va = argraw(n);
+  int i;
+  for (i = 0; i < max; i++) {
+    uint64 pa = walkaddr(p->pagetable, va + i);
+    if (pa == 0) return -1;
+    buf[i] = *(char *)pa;
+    if (buf[i] == 0) break;
+  }
+  return i;
+}
+
 /* ================================================================
  * TODO [Lab6-任务3-步骤1]：
  *   完善系统调用函数指针表 syscalls[]。
@@ -38,7 +75,11 @@
  *   后续可按需添加更多系统调用。
  * ================================================================ */
 static uint64 (*syscalls[20])(void) = {
-    /* [SYS_getpid] = sys_getpid, */ /* <-- 取消注释并添加这行 */
+    [SYS_fork]   = sys_fork,
+    [SYS_exit]   = sys_exit,
+    [SYS_wait]   = sys_wait,
+    [SYS_getpid] = sys_getpid,
+    [SYS_write]  = sys_write,
 };
 
 /* ================================================================
@@ -58,4 +99,14 @@ void syscall(void) {
    *      将返回值存入 p->trapframe->a0（用户程序会从 a0 读取返回值）。
    *   3. 若非法，打印错误并将 p->trapframe->a0 = -1（返回错误码）。
    * ================================================================ */
+  if(1<=num && 
+    num<NELEM(syscalls) && 
+    syscalls[num]!=0)
+  {
+    p->trapframe->a0=syscalls[num]();
+  }
+  else{
+    printf("%d %s: unknown sys call %d\n", p->pid, p->name, num);
+    p->trapframe->a0 = -1;
+  }
 }

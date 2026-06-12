@@ -179,8 +179,10 @@ void kvmininit(void) {
    *   权限：可读+可写（数据段需要写权限，但不能有可执行权限）。
    * ================================================================ */
   mappages(kernel_pagetable, etext111, PHYSTOP - etext111, etext111, PTE_R | PTE_W);
-    
-  
+
+  /* 映射蹦床页：VA=TRAMPOLINE → PA=trampoline（R+X，两套页表共用）*/
+  extern char trampoline[];
+  mappages(kernel_pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X);
 }
 
 /* ================================================================
@@ -193,12 +195,66 @@ void kvmininit(void) {
  *       如果 kvmininit 的映射写错了，下一条指令就会产生 Page Fault，
  *       导致系统崩溃（此时无任何错误提示，GDB 单步调试是唯一出路）。
  * ================================================================ */
-void uvminit(pagetable_t user_pt) {
-  uint64 etext_aligned = PGROUNDUP((uint64)etext);
-  mappages(user_pt, UART0, PGSIZE, UART0, PTE_R | PTE_W);
-  mappages(user_pt, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
-  mappages(user_pt, KERNBASE, etext_aligned - KERNBASE, KERNBASE, PTE_R | PTE_X);
-  mappages(user_pt, etext_aligned, PHYSTOP - etext_aligned, etext_aligned, PTE_R | PTE_W);
+/* uvmcreate — 创建用户页表（含蹦床和陷阱帧映射）*/
+pagetable_t uvmcreate(uint64 trapframe_pa) {
+  pagetable_t pt = (pagetable_t)kalloc();
+  if (pt == 0)
+    return 0;
+  memset(pt, 0, PGSIZE);
+
+  /* 映射蹦床页：两套页表共用同一物理页 */
+  extern char trampoline[];
+  mappages(pt, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X);
+
+  /* 映射陷阱帧页 */
+  mappages(pt, TRAPFRAME, PGSIZE, trapframe_pa, PTE_R | PTE_W);
+
+  return pt;
+}
+
+/* uvminit — 将用户程序代码加载到用户页表的虚拟地址 0 处 */
+void uvminit(pagetable_t pt, uint8 *src, uint sz) {
+  uint64 pa = (uint64)kalloc();
+  if (pa == 0)
+    panic("uvminit: kalloc");
+  memmove((void *)pa, src, sz);
+  mappages(pt, 0, PGSIZE, pa, PTE_R | PTE_W | PTE_X | PTE_U);
+}
+
+/* uvmcopy — 复制用户地址空间（fork 用）*/
+int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
+  pte_t *pte;
+  uint64 pa, flags;
+  uint64 va;
+
+  for (va = 0; va < sz; va += PGSIZE) {
+    pte = walk(old, va, 0);
+    if (pte == 0 || (*pte & PTE_V) == 0) {
+      continue;
+    }
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    uint64 new_pa = (uint64)kalloc();
+    if (new_pa == 0)
+      return -1;
+    memmove((void *)new_pa, (void *)pa, PGSIZE);
+    if (mappages(new, va, PGSIZE, new_pa, flags) != 0) {
+      kfree((void *)new_pa);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* walkaddr — 在用户页表中查找虚拟地址对应的物理地址 */
+uint64 walkaddr(pagetable_t pagetable, uint64 va) {
+  pte_t *pte;
+  if (va >= MAXVA)
+    return 0;
+  pte = walk(pagetable, va, 0);
+  if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+    return 0;
+  return PTE2PA(*pte) | (va & 0xFFF);
 }
 
 void kvminithart(void) {

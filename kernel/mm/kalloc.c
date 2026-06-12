@@ -24,8 +24,8 @@ struct free_node {
 static struct free_node *free_mem_list;
 
 /* 内核数据段的结束地址，由链接脚本 kernel.ld 定义
- * kalloc 从 end_address 之后开始管理可用内存 */
-extern char end_address[];
+ * kalloc 从 kernel_end 之后开始管理可用内存 */
+extern char kernel_end[];
 
 /* ================================================================
  * kinit — 初始化物理内存分配器
@@ -40,7 +40,7 @@ extern char end_address[];
  * ================================================================ */
 void kinit(void) {
   char *p;
-  p = (char*)PGROUNDUP((uint64)end_address);
+  p = (char*)PGROUNDUP((uint64)kernel_end);
 
   while (p<(char*)PHYSTOP) {
     kfree(p);
@@ -71,7 +71,7 @@ void kfree(void *pa) {
   struct free_node *r;
 
   /* 安全检查（已提供，无需修改）*/
-  if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end_address ||
+  if (((uint64)pa % PGSIZE) != 0 || (char *)pa < kernel_end ||
       (uint64)pa >= PHYSTOP) {
     panic("kfree: invalid address");
   }

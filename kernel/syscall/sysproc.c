@@ -25,20 +25,33 @@ uint64 sys_getpid(void) {
    * TODO [Lab6-任务4-步骤1]：
    *   调用 myproc() 获取当前进程的 PCB 指针，返回其 pid 字段。
    * ================================================================ */
-  return -1; /* 删除这行，替换为正确逻辑 */
+  return myproc()->pid;
 }
 
 /* ================================================================
- * sys_exit (Lab6 扩展)
- *   实现进程退出。简化版：打印退出信息，将进程状态设为 TASK_ZOMBIE，然后切回调度器。
+ * sys_exit — 终止当前进程
  * ================================================================ */
 uint64 sys_exit(void) {
-  /* ================================================================
-   * TODO [Lab6-任务4-步骤2（可选）]：
-   *   实现进程退出。简化版：打印退出信息，将进程状态设为 ZOMBIE，然后切回调度器。
-   * ================================================================ */
-  panic("sys_exit: not implemented");
-  return 0;
+  int n;
+  argint(0, &n);
+  exit(n);
+  return 0;  /* never reached */
+}
+
+/* ================================================================
+ * sys_fork — 创建子进程
+ * ================================================================ */
+uint64 sys_fork(void) {
+  return fork();
+}
+
+/* ================================================================
+ * sys_wait — 等待子进程退出
+ * ================================================================ */
+uint64 sys_wait(void) {
+  uint64 p;
+  argaddr(0, &p);
+  return wait(p);
 }
 
 /* ================================================================
@@ -62,6 +75,21 @@ uint64 sys_write(void) {
    *   4. 设置 p->status = TASK_ZOMBIE
    *   5. 调用 swtch 切回调度器：swtch(&p->context, &mycpu()->context);
    * ================================================================ */
-  panic("sys_write: not implemented");
+  struct proc *p = myproc();
+
+  int fd    = p->trapframe->a0;        // 用户传的 fd
+  char *buf = (char *)p->trapframe->a1; // 用户传的 buf
+  int count = p->trapframe->a2;         // 用户传的 count
+
+  if (fd == 1) {
+    for (int i = 0; i < count; i++) {
+      uint64 pa = walkaddr(p->pagetable, (uint64)buf + i);
+      if (pa == 0)
+        return -1;
+      uart_putc(*(char*)pa);
+    }
+    return count;
+  }
   return -1;
+
 }

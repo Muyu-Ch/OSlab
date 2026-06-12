@@ -29,6 +29,11 @@ uint64 ticks = 0;
 /* 声明 sys_trap_vector 汇编入口（在 kernelvec.S 中定义）*/
 extern char sys_trap_vector[];
 
+/* 蹦床页符号（trampoline.S + kernel.ld）*/
+extern char trampoline[];
+extern char uservec[];
+extern char userret[];
+
 extern struct proc *myproc(void);
 
 extern void yield(void);
@@ -138,6 +143,9 @@ void sys_trap_handler(void) {
  *   - 只处理 scause == 8（来自 U-Mode 的 ecall）
  * ================================================================ */
 void usertrap(void) {
+  /* 蹦床 uservec 未保存 sepc，需要在此手动保存 */
+  myproc()->trapframe->epc = r_sepc();
+
   w_stvec((uint64)sys_trap_vector);
 
   uint64 scause = r_scause();
@@ -162,15 +170,15 @@ void usertrap(void) {
     /* 来自 U-Mode 的 ecall（系统调用）*/
     myproc()->trapframe->epc += 4;
     intr_on();
-    printf("usertrap: syscall from user pid=%d\n", myproc()->pid);
 
     /* 分发给系统调用处理函数 */
-    /*syscall();*/
+    syscall();
 
     usertrapret();
   } else {
     /* 用户态发生异常，直接终止该进程 */
-    printf("usertrap: unexpected scause=%ld\n", scause);
+    printf("usertrap: unexpected scause=%p sepc=%p stval=%p\n",
+           scause, r_sepc(), r_stval());
     panic("usertrap");
   }
 }
@@ -181,24 +189,35 @@ void usertrapret(void)
 
     intr_off();
 
-    p->trapframe->kernel_satp = MAKE_SATP(kernel_pagetable);
+    /* 计算蹦床代码中 userret 的虚拟地址 */
+    uint64 trampoline_userret = TRAMPOLINE +
+        ((uint64)userret - (uint64)trampoline);
+
+    /* 设置下次用户态陷阱入口为蹦床 uservec */
+    w_stvec(TRAMPOLINE + ((uint64)uservec - (uint64)trampoline));
+
+    /* 填充陷阱帧：下一次从用户态陷入时 uservec 需要这些信息 */
+    p->trapframe->kernel_satp = r_satp();
     p->trapframe->kernel_sp = p->kstack + PGSIZE;
     p->trapframe->kernel_trap = (uint64)usertrap;
     p->trapframe->kernel_hartid = r_tp();
 
+    /* 配置 sstatus：sret 后进入 U-Mode，开中断 */
     uint64 sstatus = r_sstatus();
     sstatus &= ~(1L << 8);  // SPP=0 → U-Mode
     sstatus |= (1L << 5);   // SPIE=1 → 用户态开中断
     w_sstatus(sstatus);
 
+    /* 设置用户返回地址 */
     w_sepc(p->trapframe->epc);
 
-    w_stvec((uint64)user_trap_vector);
-    w_sscratch((uint64)p->trapframe);
+    /* 预设 sscratch 为 TRAPFRAME（蹦床 uservec 的入口需要它）*/
+    w_sscratch(TRAPFRAME);
 
-    w_satp(MAKE_SATP(p->pagetable));
-    sfence_vma();
+    /* 计算用户页表的 satp 值 */
+    uint64 user_satp = MAKE_SATP(p->pagetable);
 
-    asm volatile("sret");
+    /* 通过函数指针跳入蹦床 userret，在蹦床中切换页表并 sret */
+    ((void (*)(uint64, uint64))trampoline_userret)(TRAPFRAME, user_satp);
 }
 
