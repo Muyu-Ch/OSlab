@@ -1,82 +1,42 @@
-/* bio.c — 块设备缓冲层（Lab7 任务1）
- *
- * 原则：所有文件系统的磁盘读写，都必须经过这层缓冲！
- *
- * 数据结构：
- *   struct buf — 内存中缓存一个磁盘块（512字节或1024字节）的结构体
- *   bcache     — 所有 buf 的缓冲池，形成双向 LRU 链表
- *
- * 核心操作：
- *   bread(dev, blockno) — 读取磁盘块（优先从缓存取，没有则从磁盘读）
- *   bwrite(b)           — 将修改过的缓冲块写回磁盘
- *   brelse(b)           — 释放缓冲块的占用锁（归还给缓冲池）
- *
- * 关键性能优化：LRU（最近最少使用）策略淘汰缓存块
- */
+/* bio.c — 块设备缓冲层（Lab7 任务1）*/
 
 #include "defs.h"
+#include "fs.h"
 #include "memlayout.h"
 #include "param.h"
 #include "riscv.h"
 #include "types.h"
 
-/* 磁盘块大小（字节，与文件系统层约定一致）*/
-#define BSIZE 1024
-
-/* 缓冲块结构（已提供，无需修改）*/
-struct buf {
-  int valid;         /* 当前缓存的数据是否有效（从磁盘读取过）*/
-  int disk;          /* 是否正在与磁盘驱动交互（等待读写完成）*/
-  uint dev;          /* 设备号 */
-  uint blockno;      /* 磁盘块号 */
-  uint refcnt;       /* 引用计数（有多少人在使用这块缓冲）*/
-  struct buf *prev;  /* LRU 链表前驱 */
-  struct buf *next;  /* LRU 链表后继 */
-  uchar data[BSIZE]; /* 磁盘块的实际数据（1024字节）*/
-};
-
 /* 缓冲池（全局，内核中只有一个）*/
 struct {
-  struct buf buf[NBUF]; /* 固定大小的缓冲区数组（NBUF 在 param.h 定义）*/
-  struct buf head;      /* LRU 链表的哨兵头节点 */
+  struct buf buf[NBUF];
+  struct buf head;
 } bcache;
 
-/* 外部磁盘驱动函数（在 virtio_disk.c 中实现，本框架中已提供）*/
-extern void virtio_disk_rw(struct buf *b, int write);
+/* 外部磁盘驱动函数 */
+extern void ramdisk_rw(struct buf *b, int write);
 
 /* ================================================================
  * binit — 初始化缓冲池（内核启动时调用）
- *
- * 任务：将所有 buf 连接成双向循环链表，以 bcache.head 为哨兵。
  * ================================================================ */
 void binit(void) {
   struct buf *b;
 
-  /* 初始化链表头（哨兵节点自指）*/
+  /* 初始化哨兵头节点 */
   bcache.head.prev = &bcache.head;
   bcache.head.next = &bcache.head;
 
-  /* ================================================================
-   * TODO [Lab7-任务1-步骤1]：
-   *   将 bcache.buf[] 中的每个 buf 逐个插入到链表头部（头插法）。
-   *   每次头插需要修改 4 个指针：新节点的 prev/next，以及相邻节点的 next/prev。
-   * ================================================================ */
+  /* 将每个 buf 头插到链表 */
   for (b = bcache.buf; b < bcache.buf + NBUF; b++) {
-    /* 在这里插入链表 */
-    (void)b;
+    b->next = bcache.head.next;
+    b->prev = &bcache.head;
+    bcache.head.next->prev = b;
+    bcache.head.next = b;
   }
 }
 
 /* ================================================================
  * bget — 在缓冲池中找到指定 (dev, blockno) 的缓冲块
- *
- * 算法：
- *   1. 正向遍历链表，若找到 dev 和 blockno 匹配的 buf，引用计数+1，返回
- *   2. 若未找到，反向遍历链表，找到 refcnt==0 的块（最近最少使用）
- *      将其重用为新的 (dev, blockno) 缓冲，返回
- *   3. 若全部 buf 都在被使用，panic（缓冲池耗尽）
- *
- * 注意：返回的 buf 尚未从磁盘加载数据（由 bread 判断并加载）
  * ================================================================ */
 static struct buf *bget(uint dev, uint blockno) {
   struct buf *b;
@@ -89,26 +49,21 @@ static struct buf *bget(uint dev, uint blockno) {
     }
   }
 
-  /* 步骤2：LRU 淘汰——从链表尾部（最久未使用）向前找空闲块 */
+  /* 步骤2：LRU 淘汰——从链表尾部找空闲块 */
   for (b = bcache.head.prev; b != &bcache.head; b = b->prev) {
     if (b->refcnt == 0) {
-      /* ================================================================
-       * TODO [Lab7-任务1-步骤2]：
-       *   重用这个空闲缓冲块：
-       *   1. 更新 b->dev 和 b->blockno 为新目标 dev/blockno
-       *   2. 将 b->valid 设为 0（旧数据已失效，需要重新从磁盘读）
-       *   3. 将 b->refcnt 设为 1（开始被使用）
-       *   4. 返回 b
-       * ================================================================ */
-      (void)dev;
-      (void)blockno;
+      b->dev = dev;
+      b->blockno = blockno;
+      b->valid = 0;
+      b->refcnt = 1;
+      return b;
     }
   }
   panic("bget: no buffers");
 }
 
 /* ================================================================
- * bread — 读取磁盘块（返回含有效数据的缓冲块）
+ * bread — 读取磁盘块
  * ================================================================ */
 struct buf *bread(uint dev, uint blockno) {
   struct buf *b;
@@ -116,12 +71,8 @@ struct buf *bread(uint dev, uint blockno) {
   b = bget(dev, blockno);
 
   if (!b->valid) {
-    /* 缓存未命中，需要从磁盘真正读取数据 */
-    /* ================================================================
-     * TODO [Lab7-任务1-步骤3]：
-     *   调用磁盘驱动读取数据，并将 b->valid 标记为 1（数据已有效）。
-     *   使用 virtio_disk_rw(b, 0)：第二个参数 0 表示读操作。
-     * ================================================================ */
+    ramdisk_rw(b, 0);
+    b->valid = 1;
   }
 
   return b;
@@ -131,29 +82,22 @@ struct buf *bread(uint dev, uint blockno) {
  * bwrite — 将缓冲块的修改写回磁盘
  * ================================================================ */
 void bwrite(struct buf *b) {
-  /* ================================================================
-   * TODO [Lab7-任务1-步骤4]：
-   *   调用磁盘驱动将缓冲数据写回磁盘。
-   *   使用 virtio_disk_rw(b, 1)：第二个参数 1 表示写操作。
-   * ================================================================ */
-  (void)b;
+  ramdisk_rw(b, 1);
 }
 
 /* ================================================================
- * brelse — 使用完毕，释放对缓冲块的占用
- *
- * 任务：
- *   1. 引用计数减 1
- *   2. 若引用计数归零（没人用了），把这个 buf 移动到 LRU 链表头部
- *      （表示"最近刚用完"，是最后淘汰的候选）
+ * brelse — 释放对缓冲块的占用
  * ================================================================ */
 void brelse(struct buf *b) {
-  /* ================================================================
-   * TODO [Lab7-任务1-步骤5]：
-   *   1. b->refcnt--
-   *   2. 若 b->refcnt == 0，将 b 从当前位置摘除，重新头插到链表头部：
-   *      摘除操作需修改 4 个指针（b的前据的next、b的后继的prev）；
-   *      头插到 bcache.head 后面同样需要 4 个指针修改。
-   * ================================================================ */
-  (void)b;
+  b->refcnt--;
+  if (b->refcnt == 0) {
+    /* LRU：从当前位置摘除，头插到哨兵后面 */
+    b->next->prev = b->prev;
+    b->prev->next = b->next;
+
+    b->next = bcache.head.next;
+    b->prev = &bcache.head;
+    bcache.head.next->prev = b;
+    bcache.head.next = b;
+  }
 }

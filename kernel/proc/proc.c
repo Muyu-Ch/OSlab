@@ -178,15 +178,13 @@ void* memset(void* dst, int c, uint64 n)
 
 void* memmove(void *dst, const void *src, uint64 n)
 {
-    uint64 *d = dst;
-    const uint64 *s = src;
+    uint8 *d = dst;
+    const uint8 *s = src;
 
     if (d < s) {
-        // 从前往后拷贝
         while (n--)
             *d++ = *s++;
     } else {
-        // 从后往前拷贝（处理重叠情况）
         d += n;
         s += n;
         while (n--)
@@ -282,7 +280,6 @@ int fork(void) {
 
   intr_off();
   if ((np = allocproc()) == 0) { intr_on(); return -1; }
-    return -1;
 
   /* 创建子进程用户页表（含蹦床和陷阱帧）*/
   if ((np->pagetable = uvmcreate((uint64)np->trapframe)) == 0) {

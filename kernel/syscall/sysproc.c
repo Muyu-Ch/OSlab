@@ -54,42 +54,4 @@ uint64 sys_wait(void) {
   return wait(p);
 }
 
-/* ================================================================
- * sys_write — 向文件描述符写数据
- *
- * 用户接口：int write(int fd, const void *buf, int count)
- * 参数从陷阱帧读取：
- *   fd    = trapframe->a0
- *   buf   = trapframe->a1（用户虚拟地址，不能直接在内核读！）
- *   count = trapframe->a2
- *
- * 简化版：如果 fd==1（标准输出），直接把字符打印到串口。
- * ================================================================ */
-uint64 sys_write(void) {
-  /* ================================================================
-   * TODO [Lab6-任务4-步骤3（进阶）]：
-   *   实现简化版 sys_write：
-   *   1. int fd = myproc()->trapframe->a0;
-   *   2. 获取出参 n（系统调用的第一个参数，可用 argint 拿取），并赋给 p->xstate
-   *   3. 打印类似 "Process [pid] exited with code [n]\n"
-   *   4. 设置 p->status = TASK_ZOMBIE
-   *   5. 调用 swtch 切回调度器：swtch(&p->context, &mycpu()->context);
-   * ================================================================ */
-  struct proc *p = myproc();
-
-  int fd    = p->trapframe->a0;        // 用户传的 fd
-  char *buf = (char *)p->trapframe->a1; // 用户传的 buf
-  int count = p->trapframe->a2;         // 用户传的 count
-
-  if (fd == 1) {
-    for (int i = 0; i < count; i++) {
-      uint64 pa = walkaddr(p->pagetable, (uint64)buf + i);
-      if (pa == 0)
-        return -1;
-      uart_putc(*(char*)pa);
-    }
-    return count;
-  }
-  return -1;
-
-}
+/* sys_write 移至 kernel/syscall/sysfile.c（Lab7 扩展支持文件写入）*/

@@ -18,8 +18,8 @@
 #define UART0 0x10000000L /* UART串口基地址（MMIO） */
 #define UART0_IRQ 10      /* UART中断号 */
 
-#define VIRTIO0 0x10001000 /* virtio磁盘基地址 */
-#define VIRTIO0_IRQ 1      /* virtio中断号 */
+#define VIRTIO0 0x10008000L /* virtio磁盘基地址（QEMU virt 机型）*/
+#define VIRTIO0_IRQ 1        /* virtio中断号 */
 
 #define PLIC 0x0c000000L /* PLIC中断控制器基地址 */
 #define PLIC_PRIORITY (PLIC + 0x0)

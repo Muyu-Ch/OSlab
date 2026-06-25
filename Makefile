@@ -1,15 +1,13 @@
-# Makefile — 构建系统（Lab1 完成后即可使用）
+# Makefile — 构建系统
 #
 # 使用方法：
 #   make          # 编译内核
 #   make run      # 编译并在 QEMU 中启动内核
 #   make debug    # 启动 QEMU 并等待 GDB 连接（端口 1234）
 #   make clean    # 清除所有编译产物
-#
-# 注意：随着实验推进，你需要把新增的 .c 和 .S 文件加入 SRCS 列表。
 
 # ============================================================
-# 工具链配置（无需修改）
+# 工具链配置
 # ============================================================
 CROSS   = riscv64-unknown-elf-
 CC      = $(CROSS)gcc
@@ -19,52 +17,14 @@ OBJCOPY = $(CROSS)objcopy
 
 # ============================================================
 # 编译标志
-#   -nostdlib     : 不链接任何 C 标准库（我们在裸机环境中！）
-#   -fno-builtin  : 禁用编译器内置函数（如 memcpy），我们自己实现
-#   -mcmodel=medany: 使用"中等任意"代码模型，支持大范围地址访问
-#   -march=rv64gc : 目标架构为 64位 RISC-V，包含整数、乘除、原子、压缩指令集
-#   -mabi=lp64d   : ABI：long和指针为64位，浮点使用硬件寄存器
-#   -g            : 保留调试信息（GDB需要）
-#   -Wall         : 开启所有警告（推荐保留，帮助发现潜在错误）
 # ============================================================
 CFLAGS = -nostdlib -fno-builtin -mcmodel=medany \
          -march=rv64gc -mabi=lp64d \
          -g -Wall -ffreestanding \
          -I kernel/include
 
-# ============================================================
-# TODO [Lab1-任务4]：
-#   随着实验进行，将新增的源文件路径添加到 SRCS 列表。
-#
-#   Lab1 完成后，SRCS 应包含（去掉下面的注释符号 #）：
-#     kernel/boot/entry.S
-#     kernel/driver/uart.c
-#     kernel/boot/main.c
-#
-#   Lab2 完成后，追加：
-#     kernel/driver/console.c
-#
-#   Lab3 完成后，追加：
-#     kernel/mm/kalloc.c
-#    kernel/mm/vm.c
-#
-#   Lab4 完成后，追加：
-#     kernel/boot/start.c
-#     kernel/trap/kernelvec.S
-#    kernel/trap/trap.c
-#
-#   Lab5 完成后，追加：
-#     kernel/proc/proc.c
-#     kernel/proc/swtch.S
-#
-#   Lab6 完成后，追加：
-#     kernel/syscall/syscall.c
-#     kernel/syscall/sysproc.c
-#
-#   Lab7 完成后，追加：
-#     kernel/fs/bio.c
-#     kernel/fs/fs.c
-# ============================================================
+HOSTCC = gcc
+
 SRCS = \
     kernel/boot/entry.S \
     kernel/driver/uart.c \
@@ -72,16 +32,20 @@ SRCS = \
     kernel/driver/console.c \
     kernel/mm/kalloc.c \
     kernel/mm/vm.c \
-	kernel/boot/start.c \
+    kernel/boot/start.c \
     kernel/trap/kernelvec.S \
     kernel/trap/trap.c \
-	kernel/trap/timervec.S\
-    kernel/proc/proc.c\
-    kernel/proc/swtch.S\
-	kernel/syscall/syscall.c\
+    kernel/trap/timervec.S \
+    kernel/proc/proc.c \
+    kernel/proc/swtch.S \
+    kernel/syscall/syscall.c \
     kernel/syscall/sysproc.c \
-    kernel/trap/trampoline.S
-#   ^ Lab1 基础文件，后续实验在此追加
+    kernel/syscall/sysfile.c \
+    kernel/trap/trampoline.S \
+    kernel/fs/bio.c \
+    kernel/fs/fs.c \
+    kernel/fs/file.c \
+    kernel/fs/ramdisk.c
 
 KERNEL  = kernel.elf
 LDSCRIPT = kernel.ld
@@ -93,10 +57,27 @@ USER_ELF  = $(USER_DIR)/prozero.elf
 USER_BIN  = $(USER_DIR)/prozero.bin
 USER_OBJ  = $(USER_DIR)/prozero.o
 
+# 磁盘镜像
+FS_IMG = fs.img
+FS_IMG_O = fs_img.o
+MKFS   = mkfs
+
 # ============================================================
 # 构建目标
 # ============================================================
 all: $(KERNEL)
+
+# 构建 mkfs 工具（主机编译）
+$(MKFS): mkfs.c
+	$(HOSTCC) -o $@ $<
+
+# 生成磁盘镜像
+$(FS_IMG): $(MKFS)
+	./$(MKFS) $@
+
+# 嵌入磁盘镜像为 ELF 对象文件
+$(FS_IMG_O): $(FS_IMG)
+	$(OBJCOPY) -I binary -O elf64-littleriscv --binary-architecture=riscv $< $@
 
 # 编译用户程序
 $(USER_ELF): $(USER_SRCS) $(USER_LD)
@@ -106,12 +87,12 @@ $(USER_ELF): $(USER_SRCS) $(USER_LD)
 $(USER_BIN): $(USER_ELF)
 	$(OBJCOPY) -O binary $< $@
 
-# 包装为 ELF 对象文件，暴露 _binary_*_start/_end 符号
+# 包装为 ELF 对象文件
 $(USER_OBJ): $(USER_BIN)
 	$(OBJCOPY) -I binary -O elf64-littleriscv --binary-architecture=riscv $< $@
 
-$(KERNEL): $(SRCS) $(LDSCRIPT) $(USER_OBJ)
-	$(CC) $(CFLAGS) -T $(LDSCRIPT) $(SRCS) $(USER_OBJ) -o $@
+$(KERNEL): $(SRCS) $(LDSCRIPT) $(USER_OBJ) $(FS_IMG_O)
+	$(CC) $(CFLAGS) -T $(LDSCRIPT) $(SRCS) $(USER_OBJ) $(FS_IMG_O) -o $@
 	@echo "======================================"
 	@echo " 内核编译成功：$(KERNEL)"
 	@echo " 现在运行 'make run' 启动 QEMU"
@@ -146,5 +127,6 @@ debug: $(KERNEL)
 # 清除编译产物
 clean:
 	rm -f $(KERNEL) *.o *.d $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/*.bin
+	rm -f $(MKFS) $(FS_IMG) $(FS_IMG_O)
 
 .PHONY: all run debug clean

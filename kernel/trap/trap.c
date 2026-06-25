@@ -89,9 +89,9 @@ void sys_trap_handler(void) {
     case 1:
       w_sip(r_sip()& ~(1<<1));
       ticks++;
-      if(ticks % TickRate == 0){
-        printf("Tick! ticks=%d\n", ticks);
-      }
+      //if(ticks % TickRate == 0){
+        //printf("Tick! ticks=%d\n", ticks);
+      //}
       if(myproc() != 0)
         yield();
       break;
@@ -118,7 +118,7 @@ void sys_trap_handler(void) {
   }
   else {
     /* 同步异常：无法恢复，直接 panic */
-    printf("sys_trap_handler: exception! scause=%lx, sepc=%p, stval=%p\n",
+    printf("sys_trap_handler: exception! scause=%p, sepc=%p, stval=%p\n",
        scause, sepc, r_stval());
     panic("sys_trap_handler: unexpected exception");
   }
@@ -157,8 +157,8 @@ void usertrap(void) {
     if (irq == 1) {
       w_sip(r_sip() & ~(1<<1));
       ticks++;
-      if (ticks % TickRate == 0)
-        printf("Tick! ticks=%d\n", ticks);
+      //if (ticks % TickRate == 0)
+        //printf("Tick! ticks=%d\n", ticks);
       if (myproc() != 0)
         yield();
     } else {

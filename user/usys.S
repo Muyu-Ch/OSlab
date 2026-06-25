@@ -17,7 +17,11 @@
 #define SYS_wait    3
 #define SYS_getpid  11
 #define SYS_sbrk    12
+#define SYS_open    15
 #define SYS_write   16
+#define SYS_read    17
+#define SYS_close   18
+#define SYS_mkdir   19
 
 /* ================================================================
  * TODO [Lab6-任务1]：
@@ -74,5 +78,29 @@ wait:
     .global write
 write:
     li a7, SYS_write
+    ecall
+    ret
+
+    .global open
+open:
+    li a7, SYS_open
+    ecall
+    ret
+
+    .global close
+close:
+    li a7, SYS_close
+    ecall
+    ret
+
+    .global read
+read:
+    li a7, SYS_read
+    ecall
+    ret
+
+    .global mkdir
+mkdir:
+    li a7, SYS_mkdir
     ecall
     ret

@@ -15,12 +15,16 @@
 #include "types.h"
 
 /* 系统调用号常量定义 */
-#define SYS_fork 1
-#define SYS_exit 2
-#define SYS_wait 3
+#define SYS_fork   1
+#define SYS_exit   2
+#define SYS_wait   3
+#define SYS_open   15
+#define SYS_write  16
+#define SYS_read   17
+#define SYS_close  18
+#define SYS_mkdir  19
 #define SYS_getpid 11
-#define SYS_sbrk 12
-#define SYS_write 16
+#define SYS_sbrk   12
 
 /* 获取定义长度的宏 */
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
@@ -74,12 +78,16 @@ int argstr(int n, char *buf, int max) {
  *   目前只实现 sys_getpid，其余留空（NULL）。
  *   后续可按需添加更多系统调用。
  * ================================================================ */
-static uint64 (*syscalls[20])(void) = {
+static uint64 (*syscalls[21])(void) = {
     [SYS_fork]   = sys_fork,
     [SYS_exit]   = sys_exit,
     [SYS_wait]   = sys_wait,
     [SYS_getpid] = sys_getpid,
+    [SYS_open]   = sys_open,
     [SYS_write]  = sys_write,
+    [SYS_read]   = sys_read,
+    [SYS_close]  = sys_close,
+    [SYS_mkdir]  = sys_mkdir,
 };
 
 /* ================================================================

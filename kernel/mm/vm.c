@@ -164,6 +164,9 @@ void kvmininit(void) {
    * ================================================================ */
   mappages(kernel_pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W);
 
+  /* 映射 VIRTIO MMIO 区域（8个槽位 × 每槽4KB = 32KB）*/
+  mappages(kernel_pagetable, VIRTIO0, 0x8000, VIRTIO0, PTE_R | PTE_W);
+
   mappages(kernel_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
 
   /* ================================================================

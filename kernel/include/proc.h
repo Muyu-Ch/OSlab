@@ -10,6 +10,7 @@
 
 #include "types.h"
 #include "param.h"
+#include "fs.h"
 /* ================================================================
  * 进程状态枚举
  * ================================================================ */
@@ -116,6 +117,7 @@ struct proc {
   void *chan;                  /* sleep/wakeup 等待通道 */
   int killed;                  /* 是否已被 kill */
   char name[16];               /* 进程名称（调试用）*/
+  struct file *ofile[NOFILE];   /* 进程打开的文件描述符表 */
 };
 
 /* CPU 描述结构 */

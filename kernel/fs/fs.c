@@ -1,120 +1,231 @@
 /* fs.c — 文件系统核心（Lab7 任务2-3）
  *
- * 实现"文件系统层"，在块设备缓冲层之上提供：
- *   - bmap()        : 文件逻辑块号 → 磁盘物理块号（处理直接/间接索引）
- *   - readi()       : 从 inode 文件读取数据
- *   - writei()      : 向 inode 文件写入数据
- *   - dirlookup()   : 在目录中按文件名查找 inode
- *
- * 重要概念：
- *   Inode（索引节点）= 文件的"灵魂"，存储文件大小、数据块位置等元信息
- *   Dirent（目录项）= 目录文件的内容，格式：{inum(2字节), name(14字节)}
+ * 实现 inode 管理、块分配、文件读写、目录操作、路径解析。
  */
 
 #include "defs.h"
+#include "fs.h"
 #include "memlayout.h"
 #include "param.h"
+#include "proc.h"
 #include "riscv.h"
 #include "types.h"
 
-/* 文件系统布局参数 */
-#define BSIZE 1024                       /* 磁盘块大小（字节）*/
-#define NDIRECT 12                       /* 直接块指针数量 */
-#define NINDIRECT (BSIZE / sizeof(uint)) /* 一级间接块中的指针数量 */
-#define DIRSIZ 14                        /* 目录项中文件名的最大长度 */
+/* ================================================================
+ * 全局状态
+ * ================================================================ */
+struct superblock sb;
 
-/* 磁盘上的 inode 结构（存储在磁盘上的格式）*/
-struct dinode {
-  short type;  /* 文件类型（0=空闲, 1=普通文件, 2=目录, 3=设备）*/
-  short major; /* 设备主号（仅 type==3 时有效）*/
-  short minor; /* 设备次号（仅 type==3 时有效）*/
-  short nlink; /* 硬链接计数 */
-  uint size;   /* 文件大小（字节数）*/
-  uint addrs[NDIRECT +
-             1]; /* 数据块地址：前 NDIRECT 个是直接，最后一个是一级间接 */
-};
+struct {
+  struct inode inode[NINODE];
+} icache;
 
-/* 内存中的 inode（缓存版，包含磁盘版本和额外运行时信息）*/
-struct inode {
-  uint dev;  /* 设备号 */
-  uint inum; /* inode 编号 */
-  int ref;   /* 引用计数 */
-  int valid; /* 内容是否从磁盘读入 */
-  /* 以下字段来自磁盘 dinode（读入后缓存在这里）*/
-  short type;
-  short major;
-  short minor;
-  short nlink;
-  uint size;
-  uint addrs[NDIRECT + 1];
-};
+/* ================================================================
+ * 声明外部函数
+ * ================================================================ */
+extern void ramdisk_rw(struct buf *b, int write);
 
-/* 目录项结构（目录文件中每一条记录的格式）*/
-struct dirent {
-  ushort inum;       /* 该条目对应的 inode 编号（0 表示空洞/已删除）*/
-  char name[DIRSIZ]; /* 文件名（最多 14 字符，不含 '\0'）*/
-};
+/* ================================================================
+ * balloc — 分配一个空闲磁盘块
+ * ================================================================ */
+static uint balloc(uint dev) {
+  for (int b = 0; b < sb.size; b += BPB) {
+    struct buf *bp = bread(dev, sb.bmapstart + b / BPB);
+    for (int bi = 0; bi < BPB && b + bi < sb.size; bi++) {
+      int m = bi / 8;
+      int bit = bi % 8;
+      if ((bp->data[m] & (1 << bit)) == 0) {
+        bp->data[m] |= (1 << bit);
+        bwrite(bp);
+        brelse(bp);
+        /* 清零新分配的块 */
+        struct buf *zero = bread(dev, b + bi);
+        memset(zero->data, 0, BSIZE);
+        bwrite(zero);
+        brelse(zero);
+        return b + bi;
+      }
+    }
+    brelse(bp);
+  }
+  panic("balloc: no free blocks");
+}
 
-/* 声明外部函数（由其他模块提供）*/
-extern struct buf *bread(uint dev, uint blockno);
-extern void brelse(struct buf *b);
-extern void bwrite(struct buf *b);
+/* ================================================================
+ * bfree — 释放一个磁盘块
+ * ================================================================ */
+static void bfree(uint dev, uint bno) {
+  struct buf *bp = bread(dev, sb.bmapstart + bno / BPB);
+  int bi = bno % BPB;
+  bp->data[bi / 8] &= ~(1 << (bi % 8));
+  bwrite(bp);
+  brelse(bp);
+}
+
+/* ================================================================
+ * bzero — 清零一个磁盘块
+ * ================================================================ */
+static void bzero(uint dev, uint bno) {
+  struct buf *bp = bread(dev, bno);
+  memset(bp->data, 0, BSIZE);
+  bwrite(bp);
+  brelse(bp);
+}
+
+/* ================================================================
+ * fsinit — 初始化文件系统
+ * ================================================================ */
+void fsinit(int dev) {
+  /* 初始化缓冲池 */
+  binit();
+
+  /* 读取超级块 */
+  struct buf *bp = bread(dev, 1);
+  memmove(&sb, bp->data, sizeof(sb));
+  brelse(bp);
+
+  /* 验证魔数 */
+  if (sb.magic != FSMAGIC)
+    panic("fsinit: invalid file system");
+
+  /* 初始化 inode 缓存 */
+  for (int i = 0; i < NINODE; i++) {
+    icache.inode[i].ref = 0;
+    icache.inode[i].valid = 0;
+  }
+}
+
+/* ================================================================
+ * iget — 获取 inode 的内存缓存引用（不读磁盘）
+ * ================================================================ */
+struct inode *iget(uint dev, uint inum) {
+  struct inode *ip, *empty;
+
+  empty = 0;
+  for (ip = icache.inode; ip < icache.inode + NINODE; ip++) {
+    if (ip->ref > 0 && ip->dev == dev && ip->inum == inum) {
+      ip->ref++;
+      return ip;
+    }
+    if (empty == 0 && ip->ref == 0)
+      empty = ip;
+  }
+
+  if (empty == 0)
+    panic("iget: no inodes");
+
+  empty->dev = dev;
+  empty->inum = inum;
+  empty->ref = 1;
+  empty->valid = 0;
+  return empty;
+}
+
+/* ================================================================
+ * ilock — 锁定 inode 并从磁盘加载数据
+ * ================================================================ */
+void ilock(struct inode *ip) {
+  if (ip->valid == 0) {
+    struct buf *bp = bread(ip->dev, sb.inodestart + ip->inum / IPB);
+    struct dinode *dip = (struct dinode *)bp->data + (ip->inum % IPB);
+
+    ip->type  = dip->type;
+    ip->major = dip->major;
+    ip->minor = dip->minor;
+    ip->nlink = dip->nlink;
+    ip->size  = dip->size;
+    memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
+    brelse(bp);
+    ip->valid = 1;
+  }
+  if (ip->type == 0)
+    panic("ilock: no type");
+}
+
+/* ================================================================
+ * iunlock — 解锁 inode
+ * ================================================================ */
+void iunlock(struct inode *ip) {
+  /* 简化版：空操作（未实现睡眠锁）*/
+}
+
+/* ================================================================
+ * iput — 释放 inode 引用
+ * ================================================================ */
+void iput(struct inode *ip) {
+  ip->ref--;
+  if (ip->ref == 0) {
+    ip->valid = 0;
+  }
+}
+
+/* ================================================================
+ * iupdate — 将内存 inode 修改写回磁盘
+ * ================================================================ */
+void iupdate(struct inode *ip) {
+  struct buf *bp = bread(ip->dev, sb.inodestart + ip->inum / IPB);
+  struct dinode *dip = (struct dinode *)bp->data + (ip->inum % IPB);
+
+  dip->type  = ip->type;
+  dip->major = ip->major;
+  dip->minor = ip->minor;
+  dip->nlink = ip->nlink;
+  dip->size  = ip->size;
+  memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
+  bwrite(bp);
+  brelse(bp);
+}
+
+/* ================================================================
+ * ialloc — 分配一个新 inode
+ * ================================================================ */
+struct inode *ialloc(uint dev, short type) {
+  for (int inum = 1; inum < sb.ninodes; inum++) {
+    struct buf *bp = bread(dev, sb.inodestart + inum / IPB);
+    struct dinode *dip = (struct dinode *)bp->data + (inum % IPB);
+    if (dip->type == 0) {
+      memset(dip, 0, sizeof(*dip));
+      dip->type = type;
+      bwrite(bp);
+      brelse(bp);
+      return iget(dev, inum);
+    }
+    brelse(bp);
+  }
+  panic("ialloc: no inodes");
+}
 
 /* ================================================================
  * bmap — 将文件的逻辑块号映射到磁盘的物理块号
- *
- * 参数：
- *   ip — inode 指针
- *   bn — 文件内逻辑块编号（从 0 开始）
- *
- * 返回：对应的磁盘物理块号
- *
- * 映射规则（两层结构）：
- *   bn < NDIRECT     → 直接映射：ip->addrs[bn]
- *   bn < NINDIRECT   → 间接映射：读取间接块，在其中查找 addrs[bn-NDIRECT]
- *   否则             → 文件过大，panic
- *
- * 若目标块尚未分配（地址为0），自动调用 balloc() 分配新块。
  * ================================================================ */
-static uint bmap(struct inode *ip, uint bn) {
+uint bmap(struct inode *ip, uint bn) {
   uint addr;
   struct buf *bp;
   uint *a;
 
-  /* 直接映射（前 NDIRECT 个逻辑块）*/
   if (bn < NDIRECT) {
     if ((addr = ip->addrs[bn]) == 0) {
-      /* ================================================================
-       * TODO [Lab7-任务2-步骤1]：
-       *   这个块尚未分配，调用 balloc 分配一个新磁盘块并将其块号写入 ip->addrs[bn]。
-       * ================================================================ */
+      addr = balloc(ip->dev);
+      ip->addrs[bn] = addr;
     }
     return addr;
   }
 
   bn -= NDIRECT;
 
-  /* 一级间接映射 */
   if (bn < NINDIRECT) {
-    /* 先确保间接指针块本身已分配 */
     if ((addr = ip->addrs[NDIRECT]) == 0) {
-      /* ================================================================
-       * TODO [Lab7-任务2-步骤2]：
-       *   分配间接指针块本身：同样调用 balloc，将块号写入 ip->addrs[NDIRECT]。
-       * ================================================================ */
+      addr = balloc(ip->dev);
+      ip->addrs[NDIRECT] = addr;
     }
 
-    /* 读取间接指针块（它里面存的是一堆物理块地址）*/
     bp = bread(ip->dev, addr);
     a = (uint *)bp->data;
 
-    /* 在间接块中查找第 bn 个物理块地址 */
     if ((addr = a[bn]) == 0) {
-      /* ================================================================
-       * TODO [Lab7-任务2-步骤3]：
-       *   分配实际数据块，将其块号写入间接块并将间接块写回磁盘。
-       *   注意：修改间接块后必须显式调用 bwrite(bp) 将其刷回磁盘！
-       * ================================================================ */
+      addr = balloc(ip->dev);
+      a[bn] = addr;
+      bwrite(bp);
     }
     brelse(bp);
     return addr;
@@ -125,15 +236,6 @@ static uint bmap(struct inode *ip, uint bn) {
 
 /* ================================================================
  * readi — 从 inode 文件中读取数据
- *
- * 参数：
- *   ip       — 要读取的 inode
- *   user_dst — 目标地址是否是用户虚拟地址（0=内核地址，1=用户地址）
- *   dst      — 目标缓冲区地址
- *   off      — 文件内偏移（字节）
- *   n        — 要读取的字节数
- *
- * 返回：实际读取的字节数（若 off 超过文件末尾则返回 0）
  * ================================================================ */
 int readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n) {
   uint tot, m;
@@ -145,62 +247,237 @@ int readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n) {
     n = ip->size - off;
 
   for (tot = 0; tot < n; tot += m, off += m, dst += m) {
-    /* 找到当前偏移所在的物理磁盘块 */
     uint blockno = bmap(ip, off / BSIZE);
     bp = bread(ip->dev, blockno);
 
-    /* 计算本次从这一块可以读多少字节 */
     m = BSIZE - off % BSIZE;
     if (m > n - tot)
       m = n - tot;
 
-    /* ================================================================
-     * TODO [Lab7-任务2-步骤4]：
-     *   将 bp->data 中从 (off % BSIZE) 开始的 m 字节拷贝到目标地址 dst。
-     *   简化版：memcpy((void*)dst, bp->data + off % BSIZE, m)。
-     *   完整版需应对用户/内核地址空间差异，使用 copyout()。
-     * ================================================================ */
+    if (user_dst) {
+      /* 逐字节拷贝到用户地址空间 */
+      struct proc *p = myproc();
+      for (uint i = 0; i < m; i++) {
+        uint64 pa = walkaddr(p->pagetable, dst + i);
+        if (pa == 0) { brelse(bp); return -1; }
+        *(char *)pa = bp->data[(off % BSIZE) + i];
+      }
+    } else {
+      memmove((void *)dst, bp->data + (off % BSIZE), m);
+    }
 
     brelse(bp);
   }
 
-  return (int)tot;
+  return tot;
 }
 
 /* ================================================================
- * dirlookup — 在目录 inode 中按文件名查找子条目
- *
- * 参数：
- *   dp   — 目录的 inode 指针（它的数据是一系列 struct dirent）
- *   name — 要查找的文件名
- *   poff — （可选输出）找到该条目在目录文件中的字节偏移
- *
- * 返回：找到则返回对应 inode 的指针（调用 iget）；未找到返回 0。
- *
- * 原理：目录也是文件！它的"文件内容"就是一条条 dirent 记录。
+ * writei — 向 inode 文件写入数据
+ * ================================================================ */
+int writei(struct inode *ip, int user_src, uint64 src, uint off, uint n) {
+  uint tot, m;
+  struct buf *bp;
+
+  if (off > ip->size || off + n < off)
+    return -1;
+  if (off + n > NDIRECT * BSIZE + NINDIRECT * BSIZE)
+    return -1;
+
+  for (tot = 0; tot < n; tot += m, off += m, src += m) {
+    uint blockno = bmap(ip, off / BSIZE);
+    bp = bread(ip->dev, blockno);
+
+    m = BSIZE - off % BSIZE;
+    if (m > n - tot)
+      m = n - tot;
+
+    if (user_src) {
+      /* 逐字节从用户地址空间读取 */
+      struct proc *p = myproc();
+      for (uint i = 0; i < m; i++) {
+        uint64 pa = walkaddr(p->pagetable, src + i);
+        if (pa == 0) { brelse(bp); return -1; }
+        bp->data[(off % BSIZE) + i] = *(char *)pa;
+      }
+    } else {
+      memmove(bp->data + (off % BSIZE), (void *)src, m);
+    }
+    bwrite(bp);
+    brelse(bp);
+  }
+
+  if (off > ip->size)
+    ip->size = off;
+  iupdate(ip);
+
+  return tot;
+}
+
+/* ================================================================
+ * dirlookup — 在目录 inode 中按文件名查找
  * ================================================================ */
 struct inode *dirlookup(struct inode *dp, char *name, uint *poff) {
   uint off, inum;
   struct dirent de;
 
-  /* 逐条读取目录中的 dirent 记录 */
   for (off = 0; off < dp->size; off += sizeof(de)) {
-    /* 从目录文件中读取一条记录 */
     if (readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup: read error");
 
-    /* inum==0 表示这个槽位是空的（文件已删除），跳过 */
     if (de.inum == 0)
       continue;
 
-    /* ================================================================
-     * TODO [Lab7-任务3]：
-     *   比较 de.name 和 name 是否相同（最多比较 DIRSIZ 个字符）。
-     *   若匹配：记录偏移到 *poff，调用 iget 获取并返回 inode。
-     *   注意：需要自己实现 strncmp（裸机无标准库）。
-     * ================================================================ */
-    (void)inum; /* 删除这行占位符 */
+    /* 比较名字（固定比较 DIRSIZ 字节）*/
+    int match = 1;
+    for (int i = 0; i < DIRSIZ; i++) {
+      if (de.name[i] != name[i]) {
+        match = 0;
+        break;
+      }
+      if (name[i] == 0)
+        break;
+    }
+
+    if (match) {
+      inum = de.inum;
+      if (poff) *poff = off;
+      return iget(dp->dev, inum);
+    }
   }
 
-  return 0; /* 未找到 */
+  return 0;
+}
+
+/* ================================================================
+ * skipelem — 解析路径的下一个分量
+ * ================================================================ */
+static char *skipelem(char *path, char *name) {
+  /* 跳过开头的 '/' */
+  while (*path == '/')
+    path++;
+
+  if (*path == 0)
+    return 0;
+
+  char *s = path;
+  while (*path != '/' && *path != 0)
+    path++;
+
+  int len = path - s;
+  if (len > DIRSIZ)
+    len = DIRSIZ;
+
+  memmove(name, s, len);
+  /* 剩余部分填 0 */
+  for (int i = len; i < DIRSIZ; i++)
+    name[i] = 0;
+
+  /* 跳过路径中间的所有 '/' */
+  while (*path == '/')
+    path++;
+
+  return path;
+}
+
+/* ================================================================
+ * namei — 把路径字符串变成 inode
+ * ================================================================ */
+struct inode *namei(char *path) {
+  char name[DIRSIZ];
+  struct inode *ip, *next;
+
+  if (*path == '/')
+    ip = iget(ROOTDEV, ROOTINO);
+  else
+    return 0;  /* 简化：不支持相对路径 */
+
+  while ((path = skipelem(path, name)) != 0) {
+    ilock(ip);
+    if (ip->type != T_DIR) {
+      iunlock(ip);
+      iput(ip);
+      return 0;
+    }
+    next = dirlookup(ip, name, 0);
+    iunlock(ip);
+    iput(ip);
+    if (next == 0)
+      return 0;
+    ip = next;
+  }
+
+  return ip;
+}
+
+/* ================================================================
+ * nameiparent — 解析路径到父目录，返回路径的文件名部分
+ * ================================================================ */
+struct inode *nameiparent(char *path, char *name) {
+  struct inode *ip, *next;
+
+  if (*path == '/')
+    ip = iget(ROOTDEV, ROOTINO);
+  else
+    return 0;
+
+  char name_buf[DIRSIZ];
+  char *new_path;
+
+  while (1) {
+    char temp[DIRSIZ];
+    /* 保存当前 name */
+    memmove(temp, name, DIRSIZ);
+
+    new_path = skipelem(path, name_buf);
+
+    if (new_path == 0 || *new_path == 0) {
+      /* path 的最后一个分量 → name 是这个分量的名字，ip 是父目录 */
+      memmove(name, name_buf, DIRSIZ);
+      return ip;
+    }
+
+    /* new_path[0] != 0 — 还有更多分量，继续 */
+    ilock(ip);
+    if (ip->type != T_DIR) {
+      iunlock(ip);
+      iput(ip);
+      return 0;
+    }
+    next = dirlookup(ip, name_buf, 0);
+    iunlock(ip);
+    iput(ip);
+    if (next == 0)
+      return 0;
+    ip = next;
+    path = new_path;
+  }
+}
+
+/* ================================================================
+ * dirlink — 在目录中添加一条记录
+ * ================================================================ */
+int dirlink(struct inode *dp, char *name, uint inum) {
+  struct dirent de;
+  uint off;
+
+  /* 先找空槽（已删除的条目）*/
+  for (off = 0; off < dp->size; off += sizeof(de)) {
+    if (readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+      panic("dirlink: read error");
+    if (de.inum == 0)
+      break;
+  }
+
+  /* 填充新条目 */
+  memset(&de, 0, sizeof(de));
+  de.inum = inum;
+  /* 拷贝名字 */
+  int i;
+  for (i = 0; i < DIRSIZ && name[i]; i++)
+    de.name[i] = name[i];
+  for (; i < DIRSIZ; i++)
+    de.name[i] = 0;
+
+  return writei(dp, 0, (uint64)&de, off, sizeof(de));
 }
